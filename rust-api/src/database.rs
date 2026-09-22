@@ -1,6 +1,6 @@
 use sqlx::{MySql, Pool, Postgres, Row};
 use std::time::Duration;
-use crate::{config::{Config, OIDCConfig}, error::{AppError, AppResult}};
+use crate::{config::{Config, DatabaseConfig, OIDCConfig}, error::{AppError, AppResult}};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use std::collections::HashMap;
@@ -63,9 +63,14 @@ pub struct EpisodeNotificationInfo {
 
 impl DatabasePool {
     pub async fn new(config: &Config) -> AppResult<Self> {
-        let db = &config.database;
+        Self::from_database_config(&config.database).await
+    }
+
+    /// Connect using only the database settings. Used by the admin CLI, which
+    /// needs no Redis/Valkey or API config.
+    pub async fn from_database_config(db: &DatabaseConfig) -> AppResult<Self> {
         // A DB_HOST beginning with '/' is treated as a Unix domain socket
-        // directory rather than a TCP hostname (e.g. /var/run/postgresql).
+        // directory rather than a TCP hostname (e.g., /var/run/postgresql).
         let host_is_socket = db.host.starts_with('/');
 
         match db.db_type.as_str() {
@@ -13329,6 +13334,27 @@ impl DatabasePool {
                 Ok(user_id)
             }
         }
+    }
+
+    /// Ensure a `UserStats` row exists for the user. `add_user` (web
+    /// registration) skips it while `add_admin_user`/OIDC creation insert it
+    /// eagerly; the admin CLI calls this so CLI-created accounts match.
+    pub async fn ensure_user_stats(&self, user_id: i32) -> AppResult<()> {
+        match self {
+            DatabasePool::Postgres(pool) => {
+                sqlx::query(r#"INSERT INTO "UserStats" (userid) VALUES ($1) ON CONFLICT (userid) DO NOTHING"#)
+                    .bind(user_id)
+                    .execute(pool)
+                    .await?;
+            }
+            DatabasePool::MySQL(pool) => {
+                sqlx::query("INSERT IGNORE INTO UserStats (UserID) VALUES (?)")
+                    .bind(user_id)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     // Set fullname - matches Python set_fullname function exactly

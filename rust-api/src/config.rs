@@ -136,11 +136,14 @@ impl OIDCConfig {
     }
 }
 
-impl Config {
-    pub fn new() -> AppResult<Self> {
-        // Load environment variables
+impl DatabaseConfig {
+    /// Build the database config from `DB_*` environment variables. Used by the
+    /// server's full [`Config::new`] and by the admin CLI, which needs only the
+    /// database (no Valkey/Redis or API URLs).
+    pub fn from_env() -> AppResult<Self> {
+        // Load environment variables (no-op when already present)
         dotenvy::dotenv().ok();
-        
+
         // Validate required database environment variables
         let db_required_vars = [
             ("DB_TYPE", "Database type (e.g., postgresql, mariadb)"),
@@ -164,6 +167,30 @@ impl Config {
                 missing_db_vars.join("\n")
             )));
         }
+
+        Ok(DatabaseConfig {
+            db_type: env::var("DB_TYPE").unwrap(),
+            host: env::var("DB_HOST").unwrap(),
+            port: {
+                let port_str = env::var("DB_PORT").unwrap();
+                port_str.trim().parse()
+                    .map_err(|_e| AppError::Config(format!("Invalid DB_PORT '{}': Must be a valid port number (e.g., 5432 for PostgreSQL, 3306 for MariaDB)", port_str)))?
+            },
+            username: env::var("DB_USER").unwrap(),
+            password: env::var("DB_PASSWORD").unwrap(),
+            name: env::var("DB_NAME").unwrap(),
+            max_connections: 32,
+            min_connections: 1,
+        })
+    }
+}
+
+impl Config {
+    pub fn new() -> AppResult<Self> {
+        // Load environment variables
+        dotenvy::dotenv().ok();
+
+        let database = DatabaseConfig::from_env()?;
 
         // Validate required API URLs
         let api_required_vars = [
@@ -196,21 +223,6 @@ impl Config {
                 "Missing required Valkey/Redis configuration. Please provide either:\n  Option 1: VALKEY_URL or REDIS_URL - Complete connection URL\n  Option 2: VALKEY_HOST/VALKEY_PORT or REDIS_HOST/REDIS_PORT - Individual connection parameters\n\nExample URL: VALKEY_URL=redis://localhost:6379\nExample individual: VALKEY_HOST=localhost, VALKEY_PORT=6379"
             )));
         }
-
-        let database = DatabaseConfig {
-            db_type: env::var("DB_TYPE").unwrap(),
-            host: env::var("DB_HOST").unwrap(),
-            port: {
-                let port_str = env::var("DB_PORT").unwrap();
-                port_str.trim().parse()
-                    .map_err(|_e| AppError::Config(format!("Invalid DB_PORT '{}': Must be a valid port number (e.g., 5432 for PostgreSQL, 3306 for MariaDB)", port_str)))?
-            },
-            username: env::var("DB_USER").unwrap(),
-            password: env::var("DB_PASSWORD").unwrap(),
-            name: env::var("DB_NAME").unwrap(),
-            max_connections: 32,
-            min_connections: 1,
-        };
 
         let redis = if let Some(url) = env::var("VALKEY_URL").ok().or_else(|| env::var("REDIS_URL").ok()) {
             // Parse VALKEY_URL or REDIS_URL

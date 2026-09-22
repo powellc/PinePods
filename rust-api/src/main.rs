@@ -12,6 +12,7 @@ use tower_http::{
 };
 use tracing::{debug, error, info, warn};
 
+mod cli;
 mod config;
 mod database;
 mod error;
@@ -69,6 +70,12 @@ async fn main() -> AppResult<()> {
         let json = spec.to_pretty_json().expect("serialize OpenAPI document");
         std::fs::write(path, &json).unwrap_or_else(|e| panic!("write {path}: {e}"));
         println!("Wrote OpenAPI spec to {path}");
+        return Ok(());
+    }
+
+    // Admin CLI (`--create-user`, `--help`). Only engages when those flags are
+    // present, so normal startup and `--dump-openapi` are unaffected.
+    if cli::maybe_run(&args).await? {
         return Ok(());
     }
 

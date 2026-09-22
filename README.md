@@ -249,6 +249,35 @@ Valkey/Redis, a separately served web UI (or a native client), database
 migrations, and the container's `/opt/pinepods` and `/var/www/html/static`
 paths. For a complete server, use the Docker image.
 
+## Headless user creation :busts_in_silhouette:
+
+The web setup flow creates your first admin, but you can also create users from
+the command line — handy for automation or a host without a browser. Inside the
+running Docker container:
+
+```bash
+docker exec -i pinepods pinepods-api --create-user \
+  --username alice --email alice@example.com --password-stdin <<< 'secret'
+```
+
+Add `--admin` to grant admin rights and `--print-api-key` to print an API key
+for the new account:
+
+```bash
+printf '%s\n' "$ADMIN_PW" | docker exec -i pinepods pinepods-api --create-user \
+  --username admin --email admin@example.com --fullname "Admin" \
+  --admin --print-api-key --password-stdin
+```
+
+Passwords are read from stdin so they never land in shell history or the
+process list; run `--help` for all options. The same command works with the
+standalone binary (`./pinepods-api --create-user …`) when `DB_*` environment
+variables are set.
+
+Existing alternatives: setting `FULLNAME`/`USERNAME`/`EMAIL`/`PASSWORD` while
+bootstrapping a fresh database creates the first admin automatically, and the
+API exposes `/api/data/create_first` plus the admin-only `/api/data/add_user`.
+
 ## Clients
 
 Run the server, then connect any client by pointing it at your server URL and signing
