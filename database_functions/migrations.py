@@ -154,8 +154,12 @@ class DatabaseMigrationManager:
             cursor.execute(f"SELECT version FROM {table_name} ORDER BY applied_at")
             return [row[0] for row in cursor.fetchall()]
         except Exception as e:
-            # If table doesn't exist, return empty list
+            # If table doesn't exist, return empty list. Roll back first:
+            # the failed SELECT aborts the transaction, and without this the
+            # next statement (create_migration_table) fails with
+            # "current transaction is aborted" on a fresh database.
             logger.warning(f"Could not get applied migrations: {e}")
+            conn.rollback()
             return []
         finally:
             cursor.close()
