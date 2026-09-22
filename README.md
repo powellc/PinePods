@@ -231,6 +231,24 @@ search API, timezone tuning, PUID/PGID, and OIDC are all covered in the docs:
 - :mag: **[Self-hosting the search API](https://www.pinepods.online/docs/API/search_api)**
 - :closed_lock_with_key: **[OIDC / SSO setup](https://www.pinepods.online/docs/tutorial-extras/OIDC-setup)**
 
+## Backend API binary (non-Docker) :package:
+
+Docker is the supported way to run PinePods. If you need a standalone server
+binary — for distro packaging or a host without a container runtime — the
+**Build Backend API Binary** workflow (Actions tab) produces static musl
+`pinepods-api` builds for Linux amd64/arm64, or build one locally:
+
+```bash
+./build-backend.sh linux amd64   # Docker-based, mirrors the container build
+./build-backend.sh linux arm64
+./build-backend.sh native        # host toolchain (glibc)
+```
+
+This is the **API server only**: you still need PostgreSQL/MySQL and
+Valkey/Redis, a separately served web UI (or a native client), database
+migrations, and the container's `/opt/pinepods` and `/var/www/html/static`
+paths. For a complete server, use the Docker image.
+
 ## Clients
 
 Run the server, then connect any client by pointing it at your server URL and signing

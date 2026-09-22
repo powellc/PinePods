@@ -1,0 +1,75 @@
+name: Build Backend API Binary
+
+# Manual-only on purpose: this workflow never runs on release events, so it can
+# never kick off the Docker Hub publish workflow. Static musl `pinepods-api`
+# binaries are uploaded as GitHub Actions artifacts.
+#
+# Docker is still the supported way to run PinePods; this is for packaging or
+# advanced/non-container use.
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label for the artifact (defaults to rust-api/Cargo.toml)"
+        required: false
+        type: string
+
+jobs:
+  pinepods-api:
+    name: pinepods-api (Linux ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build static musl binary
+        run: |
+          set -e
+          mkdir -p dist
+          docker run --rm -v "$PWD:/src" -w /src -e OPENSSL_STATIC=1 rust:alpine sh -c '
+            set -e
+            apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static
+            cargo build --release --manifest-path rust-api/Cargo.toml
+            strip rust-api/target/release/pinepods-api
+            cp rust-api/target/release/pinepods-api /src/dist/pinepods-api
+          '
+
+      - name: Smoke test (offline OpenAPI dump)
+        run: ./dist/pinepods-api --dump-openapi /tmp/openapi.json
+
+      - name: Resolve version
+        id: version
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          VERSION="$VERSION_INPUT"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep -m1 '^version' rust-api/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Name and checksum
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -e
+          ARTIFACT="pinepods-api-${VERSION}-linux-${ARCH}"
+          mv dist/pinepods-api "dist/${ARTIFACT}"
+          (cd dist && sha256sum "${ARTIFACT}" > "${ARTIFACT}.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinepods-api-linux-${{ matrix.arch }}
+          path: dist/pinepods-api-*
+          if-no-files-found: error
