@@ -63,10 +63,21 @@ fn finish_key(user_id: i32, episode_id: i32, is_youtube: bool) -> String {
 /// Cheap gate so hot paths can skip metadata fetches for opted-out users.
 /// A missing preferences row means "enabled" (same default as dispatch).
 async fn playback_enabled(state: &AppState, user_id: i32) -> bool {
-    matches!(
-        state.db_pool.get_notification_preferences(user_id).await,
-        Ok((_, true))
-    )
+    match state.db_pool.get_notification_preferences(user_id).await {
+        Ok((_, true)) => true,
+        Ok((_, false)) => {
+            tracing::debug!("Playback notifications disabled for user {user_id}");
+            false
+        }
+        Err(e) => {
+            // Usually a missing UserNotificationPreferences table (migration 060
+            // not applied). Surface it so silent no-ops are diagnosable.
+            tracing::warn!(
+                "Playback notification preference check failed for user {user_id}: {e}"
+            );
+            false
+        }
+    }
 }
 
 async fn episode_info(
@@ -74,12 +85,23 @@ async fn episode_info(
     episode_id: i32,
     is_youtube: bool,
 ) -> Option<EpisodeNotificationInfo> {
-    state
+    match state
         .db_pool
         .get_episode_notification_info(episode_id, is_youtube)
         .await
-        .ok()
-        .flatten()
+    {
+        Ok(Some(info)) => Some(info),
+        Ok(None) => {
+            tracing::debug!(
+                "No episode metadata for notification (episode {episode_id}, youtube={is_youtube})"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!("Failed to load episode metadata for notification: {e}");
+            None
+        }
+    }
 }
 
 /// Playback started. `device_name` is set when the event came from the

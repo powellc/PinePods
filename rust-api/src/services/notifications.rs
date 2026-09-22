@@ -65,6 +65,7 @@ pub async fn dispatch(
 
     let settings = db.get_notification_settings(user_id).await?;
     if settings.is_empty() {
+        tracing::debug!("No notification platforms configured for user {user_id}");
         return Ok(false);
     }
 
@@ -99,6 +100,10 @@ pub async fn dispatch(
             Ok(false) => {}
             Err(e) => warn!("Notification via {} failed: {}", platform, e),
         }
+    }
+
+    if !sent_any {
+        tracing::debug!("No enabled notification platform for user {user_id}");
     }
 
     Ok(sent_any)

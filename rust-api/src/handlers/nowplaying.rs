@@ -305,14 +305,20 @@ async fn handle_now_playing_socket(
                                 let notif_state = reader_state.clone();
                                 let device = device_name.clone();
                                 tokio::spawn(async move {
-                                    let _ = crate::services::playback_notifications::notify_start(
-                                        &notif_state,
-                                        user_id,
-                                        episode_id,
-                                        is_youtube,
-                                        Some(&device),
-                                    )
-                                    .await;
+                                    if let Err(e) =
+                                        crate::services::playback_notifications::notify_start(
+                                            &notif_state,
+                                            user_id,
+                                            episode_id,
+                                            is_youtube,
+                                            Some(&device),
+                                        )
+                                        .await
+                                    {
+                                        tracing::warn!(
+                                            "Playback start notification failed: {e}"
+                                        );
+                                    }
                                 });
                             }
                         }

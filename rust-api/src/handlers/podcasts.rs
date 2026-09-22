@@ -2323,13 +2323,16 @@ pub async fn mark_episode_completed(
             let user_id = request.user_id;
             let episode_id = request.episode_id;
             tokio::spawn(async move {
-                let _ = crate::services::playback_notifications::notify_finish(
+                if let Err(e) = crate::services::playback_notifications::notify_finish(
                     &notif_state,
                     user_id,
                     episode_id,
                     is_youtube,
                 )
-                .await;
+                .await
+                {
+                    tracing::warn!("Playback finish notification failed: {e}");
+                }
             });
         }
 
@@ -2870,7 +2873,7 @@ pub async fn record_listen_duration(
         let position_sec = data.listen_duration;
         let previous_position = previous_duration.unwrap_or(0);
         tokio::spawn(async move {
-            let _ = crate::services::playback_notifications::notify_report(
+            if let Err(e) = crate::services::playback_notifications::notify_report(
                 &notif_state,
                 user_id,
                 episode_id,
@@ -2878,7 +2881,10 @@ pub async fn record_listen_duration(
                 position_sec,
                 previous_position,
             )
-            .await;
+            .await
+            {
+                tracing::warn!("Playback progress notification failed: {e}");
+            }
         });
     }
 
@@ -2907,13 +2913,16 @@ pub async fn record_listen_duration(
                 let episode_id = data.episode_id;
                 let is_youtube = data.is_youtube;
                 tokio::spawn(async move {
-                    let _ = crate::services::playback_notifications::notify_finish(
+                    if let Err(e) = crate::services::playback_notifications::notify_finish(
                         &notif_state,
                         user_id,
                         episode_id,
                         is_youtube,
                     )
-                    .await;
+                    .await
+                    {
+                        tracing::warn!("Playback finish notification failed: {e}");
+                    }
                 });
             }
         }
