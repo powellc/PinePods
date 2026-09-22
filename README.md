@@ -30,6 +30,14 @@
 
 ---
 
+> **A friendly note:** this is a fork of
+> [PinePods](https://github.com/madeofpendletonwool/PinePods) that adds
+> **playback notifications via webhook** (ntfy, Gotify, or a generic HTTP
+> endpoint). You can get a push when an episode starts, passes 25/50/75%, and
+> finishes — controlled by the new **Playback** and **New content** toggles
+> under Settings → Notifications. All credit for PinePods goes to the upstream
+> project and its wonderful contributors. :evergreen_tree:
+
 ## What is PinePods?
 
 **PinePods is a complete, self-hosted podcast management system written in Rust.**
