@@ -73,6 +73,25 @@ impl RedisClient {
         Ok(())
     }
 
+    /// SET NX EX: atomically set `key` only if it does not already exist.
+    /// Returns true when this call created the key (i.e. it "won" the race).
+    /// Used to deduplicate event notifications across repeated playback reports.
+    pub async fn set_nx<T>(&self, key: &str, value: T, seconds: u64) -> AppResult<bool>
+    where
+        T: redis::ToRedisArgs + redis::ToSingleRedisArg + Send + Sync,
+    {
+        let mut conn = self.connection.clone();
+        let result: Option<String> = redis::cmd("SET")
+            .arg(key)
+            .arg(value)
+            .arg("NX")
+            .arg("EX")
+            .arg(seconds)
+            .query_async(&mut conn)
+            .await?;
+        Ok(result.is_some())
+    }
+
     pub async fn delete(&self, key: &str) -> AppResult<bool> {
         let mut conn = self.connection.clone();
         let result: bool = conn.del(key).await?;

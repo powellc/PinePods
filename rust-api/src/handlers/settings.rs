@@ -2692,6 +2692,14 @@ pub struct NotificationSettingsRequest {
     pub http_method: Option<String>,
 }
 
+// Request struct for notification_preferences
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct NotificationPreferencesRequest {
+    pub user_id: i32,
+    pub notify_new_content: bool,
+    pub notify_playback: bool,
+}
+
 // Request struct for test_notification
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct NotificationTestRequest {
@@ -2951,6 +2959,90 @@ pub async fn update_notification_settings(
         request.http_method.as_deref()
     ).await?;
     Ok(Json(serde_json::json!({ "detail": "Notification settings updated successfully" })))
+}
+
+// Get notification category preferences (new content / playback)
+#[utoipa::path(
+    get,
+    path = "/user/notification_preferences",
+    tag = "settings",
+    summary = "Get notification category preferences",
+    params(UserIdQuery),
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "Success", body = serde_json::Value),
+        (status = 401, description = "Invalid or missing API key"),
+    ),
+)]
+pub async fn get_notification_preferences(
+    State(state): State<AppState>,
+    Query(query): Query<UserIdQuery>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let api_key = extract_api_key(&headers)?;
+    validate_api_key(&state, &api_key).await?;
+
+    // Check authorization
+    let user_id_from_api_key = state.db_pool.get_user_id_from_api_key(&api_key).await?;
+    let is_web_key = state.db_pool.is_web_key(&api_key).await?;
+
+    if query.user_id != user_id_from_api_key && !is_web_key {
+        return Err(AppError::forbidden("You can only view your own notification settings!"));
+    }
+
+    // Missing row means both categories enabled (see migration 060).
+    let (notify_new_content, notify_playback) = state
+        .db_pool
+        .get_notification_preferences(query.user_id)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "notify_new_content": notify_new_content,
+        "notify_playback": notify_playback
+    })))
+}
+
+// Update notification category preferences
+#[utoipa::path(
+    put,
+    path = "/user/notification_preferences",
+    tag = "settings",
+    summary = "Update notification category preferences",
+    request_body = NotificationPreferencesRequest,
+    security(("api_key" = [])),
+    responses(
+        (status = 200, description = "Success", body = serde_json::Value),
+        (status = 401, description = "Invalid or missing API key"),
+    ),
+)]
+pub async fn update_notification_preferences(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<NotificationPreferencesRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let api_key = extract_api_key(&headers)?;
+    validate_api_key(&state, &api_key).await?;
+
+    // Check authorization
+    let user_id_from_api_key = state.db_pool.get_user_id_from_api_key(&api_key).await?;
+    let is_web_key = state.db_pool.is_web_key(&api_key).await?;
+
+    if request.user_id != user_id_from_api_key && !is_web_key {
+        return Err(AppError::forbidden("You can only update your own notification settings!"));
+    }
+
+    state
+        .db_pool
+        .update_notification_preferences(
+            request.user_id,
+            request.notify_new_content,
+            request.notify_playback,
+        )
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "detail": "Notification preferences updated successfully"
+    })))
 }
 
 // Test notification - matches Python test_notification function exactly

@@ -52,6 +52,15 @@ pub struct ScheduledBackupRow {
     pub last_run: Option<DateTime<Utc>>,
 }
 
+/// Title / show name / duration needed to render a playback notification for an
+/// episode or YouTube video. `show_name` is the podcast name (or YouTube channel).
+#[derive(Debug, Clone)]
+pub struct EpisodeNotificationInfo {
+    pub title: String,
+    pub show_name: String,
+    pub duration: i32,
+}
+
 impl DatabasePool {
     pub async fn new(config: &Config) -> AppResult<Self> {
         let db = &config.database;
@@ -7349,199 +7358,85 @@ impl DatabasePool {
         Ok(new_episodes)
     }
 
-    // Check and send notifications for new episodes - matches Python check_and_send_notification function
+    // Check and send notifications for new episodes. Resolves the owning user and
+    // podcast name for podcasts that opted into notifications, then fans out through
+    // the shared dispatcher, which applies the user's "New content" category toggle
+    // and sends to every enabled platform (ntfy / Gotify / HTTP).
     pub async fn check_and_send_notification(&self, podcast_id: i32, episode_title: &str) -> AppResult<bool> {
-        use std::time::Duration;
-        
+        use crate::services::notifications::{dispatch, NotificationCategory};
+
         let mut success = false;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .map_err(|e| AppError::Http(e))?;
-        
+
         match self {
             DatabasePool::Postgres(pool) => {
                 let rows = sqlx::query(
-                    r#"SELECT p.notificationsenabled, p.userid, p.podcastname,
-                           uns.platform, uns.enabled, uns.ntfytopic, uns.ntfyserverurl,
-                           uns.ntfyusername, uns.ntfypassword, uns.ntfyaccesstoken,
-                           uns.gotifyurl, uns.gotifytoken
-                    FROM "Podcasts" p
-                    JOIN "UserNotificationSettings" uns ON p.userid = uns.userid
-                    WHERE p.podcastid = $1 AND p.notificationsenabled = true AND uns.enabled = true"#
+                    r#"SELECT p.userid, p.podcastname
+                       FROM "Podcasts" p
+                       WHERE p.podcastid = $1 AND p.notificationsenabled = true"#,
                 )
                 .bind(podcast_id)
                 .fetch_all(pool)
                 .await?;
-                
+
                 for result in rows {
+                    let user_id: i32 = result.try_get("userid")?;
                     let podcast_name: String = result.try_get("podcastname")?;
-                    let platform: String = result.try_get("platform")?;
-                    
-                    match platform.as_str() {
-                        "ntfy" => {
-                            let topic: String = result.try_get("ntfytopic")?;
-                            let server_url: String = result.try_get("ntfyserverurl")?;
-                            let username: Option<String> = result.try_get("ntfyusername").ok();
-                            let password: Option<String> = result.try_get("ntfypassword").ok();
-                            let access_token: Option<String> = result.try_get("ntfyaccesstoken").ok();
-                            
-                            if let Ok(sent) = Self::send_ntfy_notification(&client, &topic, &server_url, username.as_deref(), password.as_deref(), access_token.as_deref(), &podcast_name, episode_title).await {
-                                if sent {
-                                    success = true;
-                                }
-                            }
-                        }
-                        "gotify" => {
-                            let url: String = result.try_get("gotifyurl")?;
-                            let token: String = result.try_get("gotifytoken")?;
-                            
-                            if let Ok(sent) = Self::send_gotify_notification(&client, &url, &token, &podcast_name, episode_title).await {
-                                if sent {
-                                    success = true;
-                                }
-                            }
-                        }
-                        _ => {
-                            tracing::warn!("Unknown notification platform: {}", platform);
+                    let message = format!(
+                        "New episode available for {}: {}",
+                        podcast_name, episode_title
+                    );
+
+                    if let Ok(sent) = dispatch(
+                        self,
+                        user_id,
+                        NotificationCategory::NewContent,
+                        "New Podcast Episode",
+                        &message,
+                    )
+                    .await
+                    {
+                        if sent {
+                            success = true;
                         }
                     }
                 }
             }
             DatabasePool::MySQL(pool) => {
                 let rows = sqlx::query(
-                    "SELECT p.NotificationsEnabled, p.UserID, p.PodcastName,
-                            uns.Platform, uns.Enabled, uns.NtfyTopic, uns.NtfyServerUrl,
-                            uns.NtfyUsername, uns.NtfyPassword, uns.NtfyAccessToken,
-                            uns.GotifyUrl, uns.GotifyToken
+                    "SELECT p.UserID, p.PodcastName
                      FROM Podcasts p
-                     JOIN UserNotificationSettings uns ON p.UserID = uns.UserID
-                     WHERE p.PodcastID = ? AND p.NotificationsEnabled = true AND uns.Enabled = true"
+                     WHERE p.PodcastID = ? AND p.NotificationsEnabled = true",
                 )
                 .bind(podcast_id)
                 .fetch_all(pool)
                 .await?;
-                
+
                 for result in rows {
+                    let user_id: i32 = result.try_get("UserID")?;
                     let podcast_name: String = result.try_get("PodcastName")?;
-                    let platform: String = result.try_get("Platform")?;
-                    
-                    match platform.as_str() {
-                        "ntfy" => {
-                            let topic: String = result.try_get("NtfyTopic")?;
-                            let server_url: String = result.try_get("NtfyServerUrl")?;
-                            let username: Option<String> = result.try_get("NtfyUsername").ok();
-                            let password: Option<String> = result.try_get("NtfyPassword").ok();
-                            let access_token: Option<String> = result.try_get("NtfyAccessToken").ok();
-                            
-                            if let Ok(sent) = Self::send_ntfy_notification(&client, &topic, &server_url, username.as_deref(), password.as_deref(), access_token.as_deref(), &podcast_name, episode_title).await {
-                                if sent {
-                                    success = true;
-                                }
-                            }
-                        }
-                        "gotify" => {
-                            let url: String = result.try_get("GotifyUrl")?;
-                            let token: String = result.try_get("GotifyToken")?;
-                            
-                            if let Ok(sent) = Self::send_gotify_notification(&client, &url, &token, &podcast_name, episode_title).await {
-                                if sent {
-                                    success = true;
-                                }
-                            }
-                        }
-                        _ => {
-                            tracing::warn!("Unknown notification platform: {}", platform);
+                    let message = format!(
+                        "New episode available for {}: {}",
+                        podcast_name, episode_title
+                    );
+
+                    if let Ok(sent) = dispatch(
+                        self,
+                        user_id,
+                        NotificationCategory::NewContent,
+                        "New Podcast Episode",
+                        &message,
+                    )
+                    .await
+                    {
+                        if sent {
+                            success = true;
                         }
                     }
                 }
             }
         }
-        
+
         Ok(success)
-    }
-
-    // Helper function to send NTFY notification - matches Python send_ntfy_notification function
-    async fn send_ntfy_notification(
-        client: &reqwest::Client,
-        topic: &str,
-        server_url: &str,
-        username: Option<&str>,
-        password: Option<&str>,
-        access_token: Option<&str>,
-        podcast_name: &str,
-        episode_title: &str,
-    ) -> AppResult<bool> {
-        let url = format!("{}/{}", server_url.trim_end_matches('/'), topic);
-        let message = format!("New episode available for {}: {}", podcast_name, episode_title);
-        
-        let mut request = client
-            .post(&url)
-            .header("Content-Type", "text/plain")
-            .body(message);
-        
-        // Add authentication if provided
-        if let Some(token) = access_token.filter(|t| !t.is_empty()) {
-            // Use access token (preferred method)
-            request = request.header("Authorization", format!("Bearer {}", token));
-        } else if let (Some(user), Some(pass)) = (username.filter(|u| !u.is_empty()), password.filter(|p| !p.is_empty())) {
-            // Use username/password basic auth
-            request = request.basic_auth(user, Some(pass));
-        }
-        
-        match request.send().await
-        {
-            Ok(response) => {
-                if response.status().is_success() {
-                    tracing::info!("Successfully sent NTFY notification to {}", url);
-                    Ok(true)
-                } else {
-                    tracing::warn!("NTFY notification failed with status: {}", response.status());
-                    Ok(false)
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to send NTFY notification: {}", e);
-                Ok(false)
-            }
-        }
-    }
-
-    // Helper function to send Gotify notification - matches Python send_gotify_notification function
-    async fn send_gotify_notification(
-        client: &reqwest::Client,
-        server_url: &str,
-        token: &str,
-        podcast_name: &str,
-        episode_title: &str,
-    ) -> AppResult<bool> {
-        let url = format!("{}/message?token={}", server_url.trim_end_matches('/'), token);
-        let message = format!("New episode available for {}: {}", podcast_name, episode_title);
-        
-        match client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({
-                "message": message,
-                "title": "New Podcast Episode"
-            }))
-            .send()
-            .await
-        {
-            Ok(response) => {
-                if response.status().is_success() {
-                    tracing::info!("Successfully sent Gotify notification to {}", url);
-                    Ok(true)
-                } else {
-                    tracing::warn!("Gotify notification failed with status: {}", response.status());
-                    Ok(false)
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to send Gotify notification: {}", e);
-                Ok(false)
-            }
-        }
     }
 
     /// Load existing episodes for a podcast that match any of the given GUIDs, URL bases, or
@@ -12806,15 +12701,18 @@ impl DatabasePool {
     }
 
     // Record listen duration - matches Python record_listen_duration function exactly
-    pub async fn record_listen_duration(&self, episode_id: i32, user_id: i32, listen_duration: f64) -> AppResult<()> {
+    pub async fn record_listen_duration(&self, episode_id: i32, user_id: i32, listen_duration: f64) -> AppResult<Option<i32>> {
         debug!("Recording listen duration: episode_id={}, user_id={}, duration={}", episode_id, user_id, listen_duration);
         
         if listen_duration < 0.0 {
             warn!("Skipped updating listen duration for user {} and episode {} due to invalid duration: {}", user_id, episode_id, listen_duration);
-            return Ok(());
+            return Ok(None);
         }
         
         let listen_duration_int = listen_duration as i32;
+        // Previous stored position, used by callers to detect a fresh playback
+        // start (None/0 => first report for this episode).
+        let mut previous: Option<i32> = None;
         
         match self {
             DatabasePool::Postgres(pool) => {
@@ -12828,6 +12726,7 @@ impl DatabasePool {
                 if let Some(row) = existing_row {
                     let existing_duration: Option<i32> = row.try_get("listenduration")?;
                     let existing_duration = existing_duration.unwrap_or(0);
+                    previous = Some(existing_duration);
                     
                     // Update only if new duration is greater than existing
                     if listen_duration_int > existing_duration {
@@ -12863,6 +12762,7 @@ impl DatabasePool {
                 if let Some(row) = existing_row {
                     let existing_duration: Option<i32> = row.try_get("ListenDuration")?;
                     let existing_duration = existing_duration.unwrap_or(0);
+                    previous = Some(existing_duration);
                     
                     // Update only if new duration is greater than existing
                     if listen_duration_int > existing_duration {
@@ -12888,19 +12788,21 @@ impl DatabasePool {
                 }
             }
         }
-        Ok(())
+        Ok(previous)
     }
 
     // Record YouTube listen duration - matches Python record_youtube_listen_duration function exactly  
-    pub async fn record_youtube_listen_duration(&self, video_id: i32, user_id: i32, listen_duration: f64) -> AppResult<()> {
+    pub async fn record_youtube_listen_duration(&self, video_id: i32, user_id: i32, listen_duration: f64) -> AppResult<Option<i32>> {
         debug!("Recording YouTube listen duration: video_id={}, user_id={}, duration={}", video_id, user_id, listen_duration);
         
         if listen_duration < 0.0 {
             warn!("Skipped updating listen duration for user {} and video {} due to invalid duration: {}", user_id, video_id, listen_duration);
-            return Ok(());
+            return Ok(None);
         }
         
         let listen_duration_int = listen_duration as i32;
+        // Previous stored position, used by callers to detect a fresh playback start.
+        let mut previous: Option<i32> = None;
         
         match self {
             DatabasePool::Postgres(pool) => {
@@ -12914,6 +12816,7 @@ impl DatabasePool {
                 if let Some(row) = existing_row {
                     let existing_duration: Option<i32> = row.try_get("listenduration")?;
                     let existing_duration = existing_duration.unwrap_or(0);
+                    previous = Some(existing_duration);
                     
                     // Update only if new duration is greater than existing
                     if listen_duration_int > existing_duration {
@@ -12949,6 +12852,7 @@ impl DatabasePool {
                 if let Some(row) = existing_row {
                     let existing_duration: Option<i32> = row.try_get("ListenDuration")?;
                     let existing_duration = existing_duration.unwrap_or(0);
+                    previous = Some(existing_duration);
                     
                     // Update only if new duration is greater than existing
                     if listen_duration_int > existing_duration {
@@ -12974,7 +12878,7 @@ impl DatabasePool {
                 }
             }
         }
-        Ok(())
+        Ok(previous)
     }
 
 
@@ -18393,7 +18297,234 @@ impl DatabasePool {
         debug!("Successfully updated notification settings for user {} platform {}: {}", user_id, platform, success);
         Ok(success)
     }
-    
+
+    // ===================== Notification category preferences =====================
+
+    /// Fetch the user's notification category toggles as
+    /// `(notify_new_content, notify_playback)`. A missing row means both are
+    /// enabled, so existing users and lazily-created accounts keep the default
+    /// behavior without any backfill.
+    pub async fn get_notification_preferences(&self, user_id: i32) -> AppResult<(bool, bool)> {
+        match self {
+            DatabasePool::Postgres(pool) => {
+                let row = sqlx::query(
+                    r#"SELECT notifynewcontent, notifyplayback
+                       FROM "UserNotificationPreferences" WHERE userid = $1"#,
+                )
+                .bind(user_id)
+                .fetch_optional(pool)
+                .await?;
+
+                match row {
+                    Some(row) => Ok((
+                        row.try_get::<bool, _>("notifynewcontent").unwrap_or(true),
+                        row.try_get::<bool, _>("notifyplayback").unwrap_or(true),
+                    )),
+                    None => Ok((true, true)),
+                }
+            }
+            DatabasePool::MySQL(pool) => {
+                let row = sqlx::query(
+                    "SELECT NotifyNewContent, NotifyPlayback
+                     FROM UserNotificationPreferences WHERE UserID = ?",
+                )
+                .bind(user_id)
+                .fetch_optional(pool)
+                .await?;
+
+                match row {
+                    Some(row) => Ok((
+                        row.try_get::<i8, _>("NotifyNewContent").map(|v| v != 0).unwrap_or(true),
+                        row.try_get::<i8, _>("NotifyPlayback").map(|v| v != 0).unwrap_or(true),
+                    )),
+                    None => Ok((true, true)),
+                }
+            }
+        }
+    }
+
+    /// Upsert the user's notification category toggles.
+    pub async fn update_notification_preferences(
+        &self,
+        user_id: i32,
+        notify_new_content: bool,
+        notify_playback: bool,
+    ) -> AppResult<bool> {
+        let success = match self {
+            DatabasePool::Postgres(pool) => {
+                let result = sqlx::query(
+                    r#"INSERT INTO "UserNotificationPreferences" (userid, notifynewcontent, notifyplayback)
+                       VALUES ($1, $2, $3)
+                       ON CONFLICT (userid) DO UPDATE
+                       SET notifynewcontent = $2, notifyplayback = $3, updated_at = CURRENT_TIMESTAMP"#,
+                )
+                .bind(user_id)
+                .bind(notify_new_content)
+                .bind(notify_playback)
+                .execute(pool)
+                .await?;
+                result.rows_affected() > 0
+            }
+            DatabasePool::MySQL(pool) => {
+                let result = sqlx::query(
+                    "INSERT INTO UserNotificationPreferences (UserID, NotifyNewContent, NotifyPlayback)
+                     VALUES (?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                         NotifyNewContent = ?,
+                         NotifyPlayback = ?",
+                )
+                .bind(user_id)
+                .bind(notify_new_content)
+                .bind(notify_playback)
+                .bind(notify_new_content)
+                .bind(notify_playback)
+                .execute(pool)
+                .await?;
+                result.rows_affected() > 0
+            }
+        };
+
+        Ok(success)
+    }
+
+    /// Title / show / duration used to render playback notifications. Returns
+    /// `None` when the episode or video no longer exists (deleted mid-listen).
+    pub async fn get_episode_notification_info(
+        &self,
+        episode_id: i32,
+        is_youtube: bool,
+    ) -> AppResult<Option<EpisodeNotificationInfo>> {
+        match self {
+            DatabasePool::Postgres(pool) => {
+                let query = if is_youtube {
+                    r#"SELECT yv.videotitle AS title, p.podcastname AS show_name,
+                              COALESCE(yv.duration, 0) AS duration
+                       FROM "YouTubeVideos" yv
+                       JOIN "Podcasts" p ON yv.podcastid = p.podcastid
+                       WHERE yv.videoid = $1"#
+                } else {
+                    r#"SELECT e.episodetitle AS title, p.podcastname AS show_name,
+                              COALESCE(e.episodeduration, 0) AS duration
+                       FROM "Episodes" e
+                       JOIN "Podcasts" p ON e.podcastid = p.podcastid
+                       WHERE e.episodeid = $1"#
+                };
+
+                let row = sqlx::query(query).bind(episode_id).fetch_optional(pool).await?;
+                Ok(row.map(|row| EpisodeNotificationInfo {
+                    title: row.try_get::<String, _>("title").unwrap_or_default(),
+                    show_name: row.try_get::<String, _>("show_name").unwrap_or_default(),
+                    duration: row.try_get::<i32, _>("duration").unwrap_or(0),
+                }))
+            }
+            DatabasePool::MySQL(pool) => {
+                let query = if is_youtube {
+                    "SELECT yv.VideoTitle AS title, p.PodcastName AS show_name,
+                            COALESCE(yv.Duration, 0) AS duration
+                     FROM YouTubeVideos yv
+                     JOIN Podcasts p ON yv.PodcastID = p.PodcastID
+                     WHERE yv.VideoID = ?"
+                } else {
+                    "SELECT e.EpisodeTitle AS title, p.PodcastName AS show_name,
+                            COALESCE(e.EpisodeDuration, 0) AS duration
+                     FROM Episodes e
+                     JOIN Podcasts p ON e.PodcastID = p.PodcastID
+                     WHERE e.EpisodeID = ?"
+                };
+
+                let row = sqlx::query(query).bind(episode_id).fetch_optional(pool).await?;
+                Ok(row.map(|row| EpisodeNotificationInfo {
+                    title: row.try_get::<String, _>("title").unwrap_or_default(),
+                    show_name: row.try_get::<String, _>("show_name").unwrap_or_default(),
+                    duration: row.try_get::<i32, _>("duration").unwrap_or(0),
+                }))
+            }
+        }
+    }
+
+    /// True when the user's stored listen of this episode looks like a natural
+    /// playback completion rather than a manual "mark played": the history row was
+    /// touched within the last 10 minutes and the stored position is either at
+    /// least 90% through, or (for episodes longer than 10 minutes) within two
+    /// minutes of the end — clients only report every 15-30s, so the final stored
+    /// position can trail the true end. The long-episode guard keeps the absolute
+    /// window from misfiring on short clips. Bulk/sync completions never call this
+    /// (they hit `mark_episode_completed` directly), so they stay silent.
+    pub async fn is_recent_near_end_completion(
+        &self,
+        user_id: i32,
+        episode_id: i32,
+        is_youtube: bool,
+    ) -> AppResult<bool> {
+        let natural = match self {
+            DatabasePool::Postgres(pool) => {
+                let query = if is_youtube {
+                    r#"SELECT (uvh.listenduration >= yv.duration * 0.9
+                               OR (yv.duration > 600
+                                   AND yv.duration - uvh.listenduration <= 120)) AS natural
+                       FROM "UserVideoHistory" uvh
+                       JOIN "YouTubeVideos" yv ON uvh.videoid = yv.videoid
+                       WHERE uvh.userid = $1 AND uvh.videoid = $2
+                         AND COALESCE(yv.duration, 0) > 0
+                         AND uvh.listendate >= NOW() - INTERVAL '10 minutes'
+                       LIMIT 1"#
+                } else {
+                    r#"SELECT (ueh.listenduration >= e.episodeduration * 0.9
+                               OR (e.episodeduration > 600
+                                   AND e.episodeduration - ueh.listenduration <= 120)) AS natural
+                       FROM "UserEpisodeHistory" ueh
+                       JOIN "Episodes" e ON ueh.episodeid = e.episodeid
+                       WHERE ueh.userid = $1 AND ueh.episodeid = $2
+                         AND COALESCE(e.episodeduration, 0) > 0
+                         AND ueh.listendate >= NOW() - INTERVAL '10 minutes'
+                       LIMIT 1"#
+                };
+
+                sqlx::query(query)
+                    .bind(user_id)
+                    .bind(episode_id)
+                    .fetch_optional(pool)
+                    .await?
+                    .map(|row| row.try_get::<bool, _>("natural").unwrap_or(false))
+                    .unwrap_or(false)
+            }
+            DatabasePool::MySQL(pool) => {
+                let query = if is_youtube {
+                    "SELECT (uvh.ListenDuration >= yv.Duration * 0.9
+                             OR (yv.Duration > 600
+                                 AND yv.Duration - uvh.ListenDuration <= 120)) AS natural
+                     FROM UserVideoHistory uvh
+                     JOIN YouTubeVideos yv ON uvh.VideoID = yv.VideoID
+                     WHERE uvh.UserID = ? AND uvh.VideoID = ?
+                       AND COALESCE(yv.Duration, 0) > 0
+                       AND uvh.ListenDate >= NOW() - INTERVAL 10 MINUTE
+                     LIMIT 1"
+                } else {
+                    "SELECT (ueh.ListenDuration >= e.EpisodeDuration * 0.9
+                             OR (e.EpisodeDuration > 600
+                                 AND e.EpisodeDuration - ueh.ListenDuration <= 120)) AS natural
+                     FROM UserEpisodeHistory ueh
+                     JOIN Episodes e ON ueh.EpisodeID = e.EpisodeID
+                     WHERE ueh.UserID = ? AND ueh.EpisodeID = ?
+                       AND COALESCE(e.EpisodeDuration, 0) > 0
+                       AND ueh.ListenDate >= NOW() - INTERVAL 10 MINUTE
+                     LIMIT 1"
+                };
+
+                sqlx::query(query)
+                    .bind(user_id)
+                    .bind(episode_id)
+                    .fetch_optional(pool)
+                    .await?
+                    // MySQL boolean expressions come back as BIGINT, not TINYINT.
+                    .map(|row| row.try_get::<i64, _>("natural").map(|v| v != 0).unwrap_or(false))
+                    .unwrap_or(false)
+            }
+        };
+
+        Ok(natural)
+    }
+
     // Add OIDC provider - matches Python add_oidc_provider function exactly
     pub async fn add_oidc_provider(&self, provider_name: &str, client_id: &str, client_secret: &str, authorization_url: &str, token_url: &str, user_info_url: &str, button_text: &str, scope: &str, button_color: &str, button_text_color: &str, icon_svg: &str, name_claim: &str, email_claim: &str, username_claim: &str, roles_claim: &str, user_role: &str, admin_role: &str, initialized_from_env: bool) -> AppResult<i32> {
         debug!("Adding OIDC provider: {}", provider_name);

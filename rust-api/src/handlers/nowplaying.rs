@@ -297,6 +297,24 @@ async fn handle_now_playing_socket(
                                 .upsert_now_playing(user_id, snapshot)
                                 .await;
                             notify_devices_changed(&reader_state, user_id, &reader_device).await;
+
+                            // Timely playback-start push. Deduped in Redis, so the
+                            // 15s report tick can't re-fire it; spawned so a slow
+                            // notification server never blocks the socket reader.
+                            if playing {
+                                let notif_state = reader_state.clone();
+                                let device = device_name.clone();
+                                tokio::spawn(async move {
+                                    let _ = crate::services::playback_notifications::notify_start(
+                                        &notif_state,
+                                        user_id,
+                                        episode_id,
+                                        is_youtube,
+                                        Some(&device),
+                                    )
+                                    .await;
+                                });
+                            }
                         }
                         Ok(ClientMsg::Heartbeat) => {
                             let _ = reader_state

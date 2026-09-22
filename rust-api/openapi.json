@@ -9901,6 +9901,79 @@
         ]
       }
     },
+    "/api/data/user/notification_preferences": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get notification category preferences",
+        "operationId": "get_notification_preferences",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Update notification category preferences",
+        "operationId": "update_notification_preferences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationPreferencesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing API key"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/api/data/user/notification_settings": {
       "get": {
         "tags": [
@@ -14170,6 +14243,26 @@
           "user_id": {
             "type": "integer",
             "format": "int32"
+          }
+        }
+      },
+      "NotificationPreferencesRequest": {
+        "type": "object",
+        "required": [
+          "user_id",
+          "notify_new_content",
+          "notify_playback"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "notify_new_content": {
+            "type": "boolean"
+          },
+          "notify_playback": {
+            "type": "boolean"
           }
         }
       },

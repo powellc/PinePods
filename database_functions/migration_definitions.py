@@ -5662,3 +5662,51 @@ def add_ytdlp_management_columns(conn, db_type: str) -> None:
 
     finally:
         cursor.close()
+
+
+@register_migration("060", "create_user_notification_preferences", "Create UserNotificationPreferences table for per-user notification category toggles", requires=["011"])
+def create_user_notification_preferences(conn, db_type: str) -> None:
+    """Per-user notification category toggles (#playback notifications).
+
+    Notifications are split into two categories:
+      NotifyNewContent - a new episode arrived for a subscribed podcast (the
+                         historical behavior, kept ON to preserve existing installs)
+      NotifyPlayback   - your own playback events: started, 25/50/75% milestones,
+                         and finished (defaults ON per the feature request)
+
+    A missing row means "both enabled", so existing users need no backfill and
+    installs that never touch the notification settings page keep working."""
+    logger.info("Starting migration 060: create UserNotificationPreferences")
+    cursor = conn.cursor()
+
+    try:
+        if db_type == "postgresql":
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "UserNotificationPreferences" (
+                    userid INT PRIMARY KEY,
+                    notifynewcontent BOOLEAN DEFAULT TRUE,
+                    notifyplayback BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (userid) REFERENCES "Users"(userid) ON DELETE CASCADE
+                )
+            """)
+        else:  # MySQL/MariaDB
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS UserNotificationPreferences (
+                    UserID INT PRIMARY KEY,
+                    NotifyNewContent TINYINT(1) DEFAULT 1,
+                    NotifyPlayback TINYINT(1) DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
+                )
+            """)
+
+        logger.info("UserNotificationPreferences table created")
+
+    except Exception as e:
+        logger.error(f"Error in UserNotificationPreferences migration: {e}")
+        raise
+    finally:
+        cursor.close()

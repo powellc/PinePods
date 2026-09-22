@@ -2305,6 +2305,80 @@ pub async fn call_update_notification_settings(
     }
 }
 
+// Per-user notification category toggles. A missing server-side row means both
+// categories are enabled, so these defaults match the backend.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NotificationPreferences {
+    pub notify_new_content: bool,
+    pub notify_playback: bool,
+}
+
+pub async fn call_get_notification_preferences(
+    server_name: String,
+    api_key: String,
+    user_id: i32,
+) -> Result<NotificationPreferences, Error> {
+    let url = format!(
+        "{}/api/data/user/notification_preferences?user_id={}",
+        server_name, user_id
+    );
+    let response = Request::get(&url)
+        .header("Api-Key", &api_key)
+        .header("Content-Type", "application/json")
+        .send()
+        .await
+        .map_err(|e| Error::msg(format!("Network error: {}", e)))?;
+
+    if response.ok() {
+        response
+            .json::<NotificationPreferences>()
+            .await
+            .map_err(|e| Error::msg(format!("Error parsing JSON: {}", e)))
+    } else {
+        let error_text = response.text().await.unwrap_or_default();
+        Err(Error::msg(format!(
+            "Error fetching notification preferences: {}",
+            error_text
+        )))
+    }
+}
+
+pub async fn call_update_notification_preferences(
+    server_name: String,
+    api_key: String,
+    user_id: i32,
+    preferences: NotificationPreferences,
+) -> Result<DetailResponse, Error> {
+    let url = format!("{}/api/data/user/notification_preferences", server_name);
+    let body = serde_json::json!({
+        "user_id": user_id,
+        "notify_new_content": preferences.notify_new_content,
+        "notify_playback": preferences.notify_playback,
+    });
+
+    let response = Request::put(&url)
+        .header("Api-Key", &api_key)
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .map_err(|e| Error::msg(format!("Failed to create request: {}", e)))?
+        .send()
+        .await
+        .map_err(|e| Error::msg(format!("Network error: {}", e)))?;
+
+    if response.ok() {
+        response
+            .json::<DetailResponse>()
+            .await
+            .map_err(|e| Error::msg(format!("Error parsing JSON: {}", e)))
+    } else {
+        let error_text = response.text().await.unwrap_or_default();
+        Err(Error::msg(format!(
+            "Error updating notification preferences: {}",
+            error_text
+        )))
+    }
+}
+
 pub async fn call_test_notification(
     server_name: String,
     api_key: String,

@@ -435,6 +435,7 @@ fn create_data_routes() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::local_podcast::list_local_directories))
         .routes(routes!(handlers::local_podcast::detect_local_cover))
         .routes(routes!(handlers::settings::get_notification_settings, handlers::settings::update_notification_settings))
+        .routes(routes!(handlers::settings::get_notification_preferences, handlers::settings::update_notification_preferences))
         .routes(routes!(handlers::settings::set_playback_speed_user))
         .routes(routes!(handlers::settings::set_default_volume_user))
         .routes(routes!(handlers::settings::set_auto_download_delete_days_user))

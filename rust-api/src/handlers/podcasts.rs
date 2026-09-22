@@ -2300,12 +2300,39 @@ pub async fn mark_episode_completed(
     let key_id = state.db_pool.get_user_id_from_api_key(&api_key).await?;
 
     if key_id == request.user_id || is_web_key {
+        let is_youtube = request.is_youtube.unwrap_or(false);
+
+        // Decide whether this looks like a natural playback completion *before*
+        // marking: the check reads the stored position/history timestamp, which
+        // the mark itself overwrites. Bulk/sync completion paths call the DB
+        // function directly, so only user/client-driven marks reach this branch.
+        let natural_completion = state
+            .db_pool
+            .is_recent_near_end_completion(request.user_id, request.episode_id, is_youtube)
+            .await
+            .unwrap_or(false);
+
         state.db_pool.mark_episode_completed(
             request.episode_id,
             request.user_id,
-            request.is_youtube.unwrap_or(false)
+            is_youtube
         ).await?;
-        
+
+        if natural_completion {
+            let notif_state = state.clone();
+            let user_id = request.user_id;
+            let episode_id = request.episode_id;
+            tokio::spawn(async move {
+                let _ = crate::services::playback_notifications::notify_finish(
+                    &notif_state,
+                    user_id,
+                    episode_id,
+                    is_youtube,
+                )
+                .await;
+            });
+        }
+
         Ok(Json(serde_json::json!({ "detail": "Episode marked as completed." })))
     } else {
         Err(AppError::forbidden("You can only mark episodes as completed for yourself."))
@@ -2827,10 +2854,32 @@ pub async fn record_listen_duration(
         return Err(AppError::forbidden("You can only record your own listen duration"));
     }
 
-    if data.is_youtube {
-        state.db_pool.record_youtube_listen_duration(data.episode_id, data.user_id, data.listen_duration).await?;
+    let previous_duration = if data.is_youtube {
+        state.db_pool.record_youtube_listen_duration(data.episode_id, data.user_id, data.listen_duration).await?
     } else {
-        state.db_pool.record_listen_duration(data.episode_id, data.user_id, data.listen_duration).await?;
+        state.db_pool.record_listen_duration(data.episode_id, data.user_id, data.listen_duration).await?
+    };
+
+    // Playback notifications (start fallback + 25/50/75% milestones). Spawned so
+    // a slow notification server never delays the reporting client.
+    {
+        let notif_state = state.clone();
+        let user_id = data.user_id;
+        let episode_id = data.episode_id;
+        let is_youtube = data.is_youtube;
+        let position_sec = data.listen_duration;
+        let previous_position = previous_duration.unwrap_or(0);
+        tokio::spawn(async move {
+            let _ = crate::services::playback_notifications::notify_report(
+                &notif_state,
+                user_id,
+                episode_id,
+                is_youtube,
+                position_sec,
+                previous_position,
+            )
+            .await;
+        });
     }
 
     // Check if episode should be auto-completed based on user's setting
@@ -2851,6 +2900,21 @@ pub async fn record_listen_duration(
             // Also handle cases where listen_duration exceeds episode_duration (dynamic ads, etc.)
             if remaining_time <= auto_complete_seconds as f64 || data.listen_duration >= episode_duration as f64 {
                 let _ = state.db_pool.mark_episode_completed(data.episode_id, data.user_id, data.is_youtube).await;
+
+                // Natural completion: fire the finish notification (deduped).
+                let notif_state = state.clone();
+                let user_id = data.user_id;
+                let episode_id = data.episode_id;
+                let is_youtube = data.is_youtube;
+                tokio::spawn(async move {
+                    let _ = crate::services::playback_notifications::notify_finish(
+                        &notif_state,
+                        user_id,
+                        episode_id,
+                        is_youtube,
+                    )
+                    .await;
+                });
             }
         }
     }

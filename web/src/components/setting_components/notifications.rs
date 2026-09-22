@@ -2,8 +2,9 @@
 use crate::components::context::{AppState, NotificationState};
 use crate::components::gen_funcs::format_error_message;
 use crate::requests::setting_reqs::{
-    call_get_notification_settings, call_test_notification, call_update_notification_settings,
-    NotificationSettings, NotificationSettingsResponse,
+    call_get_notification_preferences, call_get_notification_settings, call_test_notification,
+    call_update_notification_preferences, call_update_notification_settings,
+    NotificationPreferences, NotificationSettings, NotificationSettingsResponse,
 };
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
@@ -38,10 +39,18 @@ pub fn notification_settings() -> Html {
     let i18n_http_endpoint_url = i18n.t("notifications.http_endpoint_url").to_string();
     let i18n_token_authentication = i18n.t("notifications.token_authentication").to_string();
     let i18n_http_method = i18n.t("notifications.http_method").to_string();
+    let i18n_notification_types = i18n.t("notifications.notification_types").to_string();
+    let i18n_new_content = i18n.t("notifications.new_content").to_string();
+    let i18n_new_content_description = i18n.t("notifications.new_content_description").to_string();
+    let i18n_playback = i18n.t("notifications.playback").to_string();
+    let i18n_playback_description = i18n.t("notifications.playback_description").to_string();
 
     // Form states
     let platform = use_state(|| "ntfy".to_string());
     let enabled = use_state(|| false);
+    // Category toggles (user-level). Defaults match the server: both enabled.
+    let notify_new_content = use_state(|| true);
+    let notify_playback = use_state(|| true);
     let ntfy_topic = use_state(|| "".to_string());
     let ntfy_server = use_state(|| "https://ntfy.sh".to_string());
     let ntfy_username = use_state(|| "".to_string());
@@ -98,6 +107,8 @@ pub fn notification_settings() -> Html {
         let http_url = http_url.clone();
         let http_token = http_token.clone();
         let http_method = http_method.clone();
+        let notify_new_content = notify_new_content.clone();
+        let notify_playback = notify_playback.clone();
         let _dispatch = _dispatch.clone();
         let notification_info = notification_info.clone();
 
@@ -110,7 +121,7 @@ pub fn notification_settings() -> Html {
                     wasm_bindgen_futures::spawn_local(async move {
                         match call_get_notification_settings(
                             server_name.clone(),
-                            api_key.unwrap().clone(),
+                            api_key.clone().unwrap(),
                             user_id,
                         )
                         .await
@@ -194,6 +205,19 @@ pub fn notification_settings() -> Html {
                                         http_method.set(method.clone());
                                     }
                                 }
+
+                                // Category toggles live in a separate preferences
+                                // table. A failed fetch keeps the defaults (both on).
+                                if let Ok(prefs) = call_get_notification_preferences(
+                                    server_name.clone(),
+                                    api_key.clone().unwrap(),
+                                    user_id,
+                                )
+                                .await
+                                {
+                                    notify_new_content.set(prefs.notify_new_content);
+                                    notify_playback.set(prefs.notify_playback);
+                                }
                             }
                             Err(e) => {
                                 let formatted_error = format_error_message(&e.to_string());
@@ -230,6 +254,8 @@ pub fn notification_settings() -> Html {
         let http_url = http_url.clone();
         let http_token = http_token.clone();
         let http_method = http_method.clone();
+        let notify_new_content = notify_new_content.clone();
+        let notify_playback = notify_playback.clone();
         let show_success = show_success.clone();
         let success_message = success_message.clone();
         let _dispatch = _dispatch.clone();
@@ -246,6 +272,8 @@ pub fn notification_settings() -> Html {
             let server_submit = submit_server.clone();
             let key_submit = submit_api.clone();
             let id_submit = submit_user.clone();
+            let prefs_new_content = notify_new_content.clone();
+            let prefs_playback = notify_playback.clone();
 
             e.prevent_default();
 
@@ -266,18 +294,46 @@ pub fn notification_settings() -> Html {
 
             wasm_bindgen_futures::spawn_local(async move {
                 match call_update_notification_settings(
-                    server_submit,
-                    key_submit,
+                    server_submit.clone(),
+                    key_submit.clone(),
                     id_submit,
                     settings,
                 )
                 .await
                 {
                     Ok(_) => {
-                        success_call.set(true);
-                        success_call_message
-                            .set(i18n_successfully_updated_notification_settings.clone());
-                        update_trig.set(!*update_trig);
+                        // Category toggles are a separate table but saved by the
+                        // same button so the whole page is consistent.
+                        let preferences = NotificationPreferences {
+                            notify_new_content: *prefs_new_content,
+                            notify_playback: *prefs_playback,
+                        };
+                        match call_update_notification_preferences(
+                            server_submit,
+                            key_submit,
+                            id_submit,
+                            preferences,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                success_call.set(true);
+                                success_call_message.set(
+                                    i18n_successfully_updated_notification_settings.clone(),
+                                );
+                                update_trig.set(!*update_trig);
+                            }
+                            Err(e) => {
+                                let formatted_error = format_error_message(&e.to_string());
+                                Dispatch::<NotificationState>::global().reduce_mut(|state| {
+                                    state.error_message = Some(format!(
+                                        "{}{}",
+                                        i18n_failed_to_update_notification_settings,
+                                        formatted_error
+                                    ));
+                                });
+                            }
+                        }
                     }
                     Err(e) => {
                         let formatted_error = format_error_message(&e.to_string());
@@ -335,6 +391,48 @@ pub fn notification_settings() -> Html {
 
     html! {
         <form onsubmit={on_submit}>
+            <div class="settings-section-subhead">{&i18n_notification_types}</div>
+
+            <div class="settings-row">
+                <div>
+                    <div class="settings-row-label">{&i18n_new_content}</div>
+                    <div class="settings-row-desc">{&i18n_new_content_description}</div>
+                </div>
+                <div class="settings-row-control">
+                    <label class="toggle">
+                        <input
+                            type="checkbox"
+                            checked={*notify_new_content}
+                            onchange={let notify_new_content = notify_new_content.clone(); Callback::from(move |e: Event| {
+                                let target: HtmlInputElement = e.target_unchecked_into();
+                                notify_new_content.set(target.checked());
+                            })}
+                        />
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="settings-row">
+                <div>
+                    <div class="settings-row-label">{&i18n_playback}</div>
+                    <div class="settings-row-desc">{&i18n_playback_description}</div>
+                </div>
+                <div class="settings-row-control">
+                    <label class="toggle">
+                        <input
+                            type="checkbox"
+                            checked={*notify_playback}
+                            onchange={let notify_playback = notify_playback.clone(); Callback::from(move |e: Event| {
+                                let target: HtmlInputElement = e.target_unchecked_into();
+                                notify_playback.set(target.checked());
+                            })}
+                        />
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    </label>
+                </div>
+            </div>
+
             <div class="settings-row">
                 <div><div class="settings-row-label">{&i18n_notification_platform}</div></div>
                 <div class="settings-row-control">
