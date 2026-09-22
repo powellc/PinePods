@@ -206,6 +206,30 @@ pub fn notification_settings() -> Html {
                                     }
                                 }
 
+                                // The page always starts on the ntfy tab. If that
+                                // platform isn't enabled but another one is, switch
+                                // to the enabled platform so the UI reflects what's
+                                // actually in use (and which row the toggle saves).
+                                let current = (*platform).clone();
+                                let current_enabled = settings_response
+                                    .settings
+                                    .iter()
+                                    .any(|s| s.platform == current && s.enabled);
+                                if !current_enabled {
+                                    if let Some(active) = ["ntfy", "gotify", "http"]
+                                        .iter()
+                                        .find(|p| {
+                                            settings_response
+                                                .settings
+                                                .iter()
+                                                .any(|s| s.platform == **p && s.enabled)
+                                        })
+                                    {
+                                        platform.set((*active).to_string());
+                                        enabled.set(true);
+                                    }
+                                }
+
                                 // Category toggles live in a separate preferences
                                 // table. A failed fetch keeps the defaults (both on).
                                 if let Ok(prefs) = call_get_notification_preferences(
