@@ -312,6 +312,7 @@ async fn handle_now_playing_socket(
                                             episode_id,
                                             is_youtube,
                                             Some(&device),
+                                            Some(position_sec),
                                         )
                                         .await
                                     {

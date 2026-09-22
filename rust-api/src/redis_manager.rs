@@ -80,6 +80,12 @@ impl NotificationManager {
     // Send test notification - matches Python notification functionality
     pub async fn send_test_notification(&self, user_id: i32, platform: &str, settings: &serde_json::Value) -> AppResult<bool> {
         info!("Sending test notification for user {} on platform {}", user_id, platform);
-        crate::services::notifications::send_test(platform, settings, "Test notification from PinePods").await
+        crate::services::notifications::send_test(
+            user_id,
+            platform,
+            settings,
+            "Test notification from PinePods",
+        )
+        .await
     }
 }

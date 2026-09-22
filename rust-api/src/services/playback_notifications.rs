@@ -19,7 +19,8 @@ use crate::database::EpisodeNotificationInfo;
 use crate::error::AppResult;
 use crate::services::notifications::{
     dispatch, playback_finish_message, playback_progress_message, playback_start_message,
-    NotificationCategory,
+    NotificationCategory, NotificationEvent, PlaybackContext, EVENT_PLAYBACK_FINISHED,
+    EVENT_PLAYBACK_PROGRESS, EVENT_PLAYBACK_STARTED,
 };
 use crate::AppState;
 
@@ -104,14 +105,35 @@ async fn episode_info(
     }
 }
 
-/// Playback started. `device_name` is set when the event came from the
-/// now-playing websocket, which produces the timeliest signal.
+/// Build a playback event around the fetched episode metadata.
+fn playback_event<'a>(
+    user_id: i32,
+    kind: &'a str,
+    title: &'a str,
+    message: &'a str,
+    info: &'a EpisodeNotificationInfo,
+    playback: Option<PlaybackContext>,
+) -> NotificationEvent<'a> {
+    NotificationEvent {
+        category: NotificationCategory::Playback,
+        kind,
+        title,
+        message,
+        user_id,
+        episode: Some(info),
+        playback,
+    }
+}
+
+/// Playback started. `device_name`/`position_sec` are set when the event came
+/// from the now-playing websocket, which produces the timeliest signal.
 pub async fn notify_start(
     state: &AppState,
     user_id: i32,
     episode_id: i32,
     is_youtube: bool,
     device_name: Option<&str>,
+    position_sec: Option<f64>,
 ) -> AppResult<()> {
     if !playback_enabled(state, user_id).await {
         return Ok(());
@@ -131,15 +153,28 @@ pub async fn notify_start(
         return Ok(());
     };
     let (title, message) = playback_start_message(&info, device_name);
-    let _ = dispatch(
-        &state.db_pool,
+    let event = playback_event(
         user_id,
-        NotificationCategory::Playback,
+        EVENT_PLAYBACK_STARTED,
         &title,
         &message,
-    )
-    .await;
+        &info,
+        Some(PlaybackContext {
+            position_sec,
+            percent: percent_of(position_sec, info.duration),
+            device_name: device_name.map(str::to_string),
+        }),
+    );
+    let _ = dispatch(&state.db_pool, &event).await;
     Ok(())
+}
+
+/// Whole-number playback percentage, when the duration is known.
+fn percent_of(position_sec: Option<f64>, duration: i32) -> Option<i32> {
+    if duration <= 0 {
+        return None;
+    }
+    position_sec.map(|p| ((p / duration as f64) * 100.0).floor() as i32)
 }
 
 /// A `record_listen_duration` report. Handles the start fallback (for clients
@@ -168,14 +203,19 @@ pub async fn notify_report(
             Ok(true)
         ) {
             let (title, message) = playback_start_message(&info, None);
-            let _ = dispatch(
-                &state.db_pool,
+            let event = playback_event(
                 user_id,
-                NotificationCategory::Playback,
+                EVENT_PLAYBACK_STARTED,
                 &title,
                 &message,
-            )
-            .await;
+                &info,
+                Some(PlaybackContext {
+                    position_sec: Some(position_sec),
+                    percent: percent_of(Some(position_sec), info.duration),
+                    device_name: None,
+                }),
+            );
+            let _ = dispatch(&state.db_pool, &event).await;
         }
     }
 
@@ -203,14 +243,19 @@ pub async fn notify_report(
 
     if let Some(milestone) = highest_new {
         let (title, message) = playback_progress_message(&info, milestone);
-        let _ = dispatch(
-            &state.db_pool,
+        let event = playback_event(
             user_id,
-            NotificationCategory::Playback,
+            EVENT_PLAYBACK_PROGRESS,
             &title,
             &message,
-        )
-        .await;
+            &info,
+            Some(PlaybackContext {
+                position_sec: Some(position_sec),
+                percent: Some(milestone),
+                device_name: None,
+            }),
+        );
+        let _ = dispatch(&state.db_pool, &event).await;
     }
 
     Ok(())
@@ -242,14 +287,19 @@ pub async fn notify_finish(
         return Ok(());
     };
     let (title, message) = playback_finish_message(&info);
-    let _ = dispatch(
-        &state.db_pool,
+    let event = playback_event(
         user_id,
-        NotificationCategory::Playback,
+        EVENT_PLAYBACK_FINISHED,
         &title,
         &message,
-    )
-    .await;
+        &info,
+        Some(PlaybackContext {
+            position_sec: None,
+            percent: Some(100),
+            device_name: None,
+        }),
+    );
+    let _ = dispatch(&state.db_pool, &event).await;
     Ok(())
 }
 

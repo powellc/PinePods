@@ -278,6 +278,56 @@ Existing alternatives: setting `FULLNAME`/`USERNAME`/`EMAIL`/`PASSWORD` while
 bootstrapping a fresh database creates the first admin automatically, and the
 API exposes `/api/data/create_first` plus the admin-only `/api/data/add_user`.
 
+## Notification webhooks :incoming_envelope:
+
+HTTP notifications POST a JSON envelope (ntfy/Gotify get the plain
+title/message instead). Playback events carry the full podcast and episode
+metadata:
+
+```json
+{
+  "event": "playback_started",
+  "title": "Playback Started",
+  "message": "Started playing Ep 1 from Test Show",
+  "text": "Started playing Ep 1 from Test Show",
+  "user_id": 2,
+  "timestamp": "2026-09-22T16:41:13+00:00",
+  "podcast": {
+    "id": 1,
+    "name": "Test Show",
+    "author": "Test Author",
+    "artwork_url": "https://example.com/show.jpg",
+    "feed_url": "https://example.com/feed.xml",
+    "website_url": "https://example.com",
+    "categories": "Tech,News",
+    "explicit": false,
+    "is_youtube": false
+  },
+  "episode": {
+    "id": 1,
+    "title": "Ep 1",
+    "description": "A test episode",
+    "url": "https://example.com/1.mp3",
+    "artwork_url": "https://example.com/1.jpg",
+    "duration_sec": 600,
+    "published_at": "2026-09-22T16:41:07",
+    "guid": "guid-1",
+    "is_video": false,
+    "is_youtube": false
+  },
+  "playback": {
+    "position_sec": 30.0,
+    "percent": 5,
+    "device_name": "Pixel"
+  }
+}
+```
+
+`event` is one of `new_content`, `playback_started`, `playback_progress`,
+`playback_finished`, or `test`. `podcast`, `episode`, and `playback` are `null`
+when not applicable (e.g. test notifications). GET webhooks receive `message`,
+`event`, and — when available — `episode_id`/`podcast_id` as query parameters.
+
 ## Clients
 
 Run the server, then connect any client by pointing it at your server URL and signing

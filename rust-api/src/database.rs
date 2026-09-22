@@ -52,13 +52,29 @@ pub struct ScheduledBackupRow {
     pub last_run: Option<DateTime<Utc>>,
 }
 
-/// Title / show name / duration needed to render a playback notification for an
-/// episode or YouTube video. `show_name` is the podcast name (or YouTube channel).
+/// Metadata for an episode (or YouTube video) and its owning podcast, used to
+/// render notifications and to build the rich HTTP webhook payload. `show_name`
+/// is the podcast name (YouTube channels are stored as podcasts).
 #[derive(Debug, Clone)]
 pub struct EpisodeNotificationInfo {
     pub title: String,
     pub show_name: String,
     pub duration: i32,
+    pub episode_id: i32,
+    pub episode_description: Option<String>,
+    pub episode_url: Option<String>,
+    pub episode_artwork: Option<String>,
+    pub episode_pub_date: Option<String>,
+    pub episode_guid: Option<String>,
+    pub is_video: bool,
+    pub is_youtube: bool,
+    pub podcast_id: i32,
+    pub podcast_author: Option<String>,
+    pub podcast_artwork: Option<String>,
+    pub podcast_feed_url: Option<String>,
+    pub podcast_website_url: Option<String>,
+    pub podcast_categories: Option<String>,
+    pub podcast_explicit: Option<bool>,
 }
 
 impl DatabasePool {
@@ -7325,7 +7341,10 @@ impl DatabasePool {
             };
 
             if notify {
-                if let Err(e) = self.check_and_send_notification(podcast_id, &ep.title).await {
+                if let Err(e) = self
+                    .check_and_send_notification(podcast_id, episode_id, &ep.title)
+                    .await
+                {
                     tracing::warn!("Failed to send notification for episode '{}': {}", ep.title, e);
                 }
             }
@@ -7367,8 +7386,23 @@ impl DatabasePool {
     // podcast name for podcasts that opted into notifications, then fans out through
     // the shared dispatcher, which applies the user's "New content" category toggle
     // and sends to every enabled platform (ntfy / Gotify / HTTP).
-    pub async fn check_and_send_notification(&self, podcast_id: i32, episode_title: &str) -> AppResult<bool> {
-        use crate::services::notifications::{dispatch, NotificationCategory};
+    pub async fn check_and_send_notification(
+        &self,
+        podcast_id: i32,
+        episode_id: i32,
+        episode_title: &str,
+    ) -> AppResult<bool> {
+        use crate::services::notifications::{
+            dispatch, NotificationCategory, NotificationEvent, EVENT_NEW_CONTENT,
+        };
+
+        // Rich metadata for the webhook payload; the plain message still works
+        // when the episode row can't be loaded.
+        let info = self
+            .get_episode_notification_info(episode_id, false)
+            .await
+            .ok()
+            .flatten();
 
         let mut success = false;
 
@@ -7390,16 +7424,17 @@ impl DatabasePool {
                         "New episode available for {}: {}",
                         podcast_name, episode_title
                     );
-
-                    if let Ok(sent) = dispatch(
-                        self,
+                    let event = NotificationEvent {
+                        category: NotificationCategory::NewContent,
+                        kind: EVENT_NEW_CONTENT,
+                        title: "New Podcast Episode",
+                        message: &message,
                         user_id,
-                        NotificationCategory::NewContent,
-                        "New Podcast Episode",
-                        &message,
-                    )
-                    .await
-                    {
+                        episode: info.as_ref(),
+                        playback: None,
+                    };
+
+                    if let Ok(sent) = dispatch(self, &event).await {
                         if sent {
                             success = true;
                         }
@@ -7423,16 +7458,17 @@ impl DatabasePool {
                         "New episode available for {}: {}",
                         podcast_name, episode_title
                     );
-
-                    if let Ok(sent) = dispatch(
-                        self,
+                    let event = NotificationEvent {
+                        category: NotificationCategory::NewContent,
+                        kind: EVENT_NEW_CONTENT,
+                        title: "New Podcast Episode",
+                        message: &message,
                         user_id,
-                        NotificationCategory::NewContent,
-                        "New Podcast Episode",
-                        &message,
-                    )
-                    .await
-                    {
+                        episode: info.as_ref(),
+                        playback: None,
+                    };
+
+                    if let Ok(sent) = dispatch(self, &event).await {
                         if sent {
                             success = true;
                         }
@@ -18423,14 +18459,35 @@ impl DatabasePool {
         match self {
             DatabasePool::Postgres(pool) => {
                 let query = if is_youtube {
-                    r#"SELECT yv.videotitle AS title, p.podcastname AS show_name,
-                              COALESCE(yv.duration, 0) AS duration
+                    r#"SELECT yv.videoid AS episode_id, yv.videotitle AS title,
+                              p.podcastname AS show_name,
+                              COALESCE(yv.duration, 0) AS duration,
+                              yv.videodescription AS episode_description,
+                              yv.videourl AS episode_url,
+                              yv.thumbnailurl AS episode_artwork,
+                              yv.publishedat AS episode_pub_date,
+                              yv.youtubevideoid AS episode_guid,
+                              p.podcastid AS podcast_id, p.author AS podcast_author,
+                              p.artworkurl AS podcast_artwork, p.feedurl AS podcast_feed_url,
+                              p.websiteurl AS podcast_website_url,
+                              p.categories AS podcast_categories, p.explicit AS podcast_explicit
                        FROM "YouTubeVideos" yv
                        JOIN "Podcasts" p ON yv.podcastid = p.podcastid
                        WHERE yv.videoid = $1"#
                 } else {
-                    r#"SELECT e.episodetitle AS title, p.podcastname AS show_name,
-                              COALESCE(e.episodeduration, 0) AS duration
+                    r#"SELECT e.episodeid AS episode_id, e.episodetitle AS title,
+                              p.podcastname AS show_name,
+                              COALESCE(e.episodeduration, 0) AS duration,
+                              e.episodedescription AS episode_description,
+                              e.episodeurl AS episode_url,
+                              e.episodeartwork AS episode_artwork,
+                              e.episodepubdate AS episode_pub_date,
+                              e.episodeguid AS episode_guid,
+                              e.is_video AS is_video,
+                              p.podcastid AS podcast_id, p.author AS podcast_author,
+                              p.artworkurl AS podcast_artwork, p.feedurl AS podcast_feed_url,
+                              p.websiteurl AS podcast_website_url,
+                              p.categories AS podcast_categories, p.explicit AS podcast_explicit
                        FROM "Episodes" e
                        JOIN "Podcasts" p ON e.podcastid = p.podcastid
                        WHERE e.episodeid = $1"#
@@ -18441,18 +18498,62 @@ impl DatabasePool {
                     title: row.try_get::<String, _>("title").unwrap_or_default(),
                     show_name: row.try_get::<String, _>("show_name").unwrap_or_default(),
                     duration: row.try_get::<i32, _>("duration").unwrap_or(0),
+                    episode_id: row.try_get::<i32, _>("episode_id").unwrap_or(0),
+                    episode_description: row.try_get("episode_description").ok().flatten(),
+                    episode_url: row.try_get("episode_url").ok().flatten(),
+                    episode_artwork: row.try_get("episode_artwork").ok().flatten(),
+                    episode_pub_date: row
+                        .try_get::<Option<chrono::NaiveDateTime>, _>("episode_pub_date")
+                        .ok()
+                        .flatten()
+                        .map(|d| d.format("%Y-%m-%dT%H:%M:%S").to_string()),
+                    episode_guid: row.try_get("episode_guid").ok().flatten(),
+                    is_video: if is_youtube {
+                        true
+                    } else {
+                        row.try_get::<bool, _>("is_video").unwrap_or(false)
+                    },
+                    is_youtube,
+                    podcast_id: row.try_get::<i32, _>("podcast_id").unwrap_or(0),
+                    podcast_author: row.try_get("podcast_author").ok().flatten(),
+                    podcast_artwork: row.try_get("podcast_artwork").ok().flatten(),
+                    podcast_feed_url: row.try_get("podcast_feed_url").ok().flatten(),
+                    podcast_website_url: row.try_get("podcast_website_url").ok().flatten(),
+                    podcast_categories: row.try_get("podcast_categories").ok().flatten(),
+                    podcast_explicit: row.try_get("podcast_explicit").ok().flatten(),
                 }))
             }
             DatabasePool::MySQL(pool) => {
                 let query = if is_youtube {
-                    "SELECT yv.VideoTitle AS title, p.PodcastName AS show_name,
-                            COALESCE(yv.Duration, 0) AS duration
+                    "SELECT yv.VideoID AS episode_id, yv.VideoTitle AS title,
+                            p.PodcastName AS show_name,
+                            COALESCE(yv.Duration, 0) AS duration,
+                            yv.VideoDescription AS episode_description,
+                            yv.VideoURL AS episode_url,
+                            yv.ThumbnailURL AS episode_artwork,
+                            yv.PublishedAt AS episode_pub_date,
+                            yv.YouTubeVideoID AS episode_guid,
+                            p.PodcastID AS podcast_id, p.Author AS podcast_author,
+                            p.ArtworkURL AS podcast_artwork, p.FeedURL AS podcast_feed_url,
+                            p.WebsiteURL AS podcast_website_url,
+                            p.Categories AS podcast_categories, p.Explicit AS podcast_explicit
                      FROM YouTubeVideos yv
                      JOIN Podcasts p ON yv.PodcastID = p.PodcastID
                      WHERE yv.VideoID = ?"
                 } else {
-                    "SELECT e.EpisodeTitle AS title, p.PodcastName AS show_name,
-                            COALESCE(e.EpisodeDuration, 0) AS duration
+                    "SELECT e.EpisodeID AS episode_id, e.EpisodeTitle AS title,
+                            p.PodcastName AS show_name,
+                            COALESCE(e.EpisodeDuration, 0) AS duration,
+                            e.EpisodeDescription AS episode_description,
+                            e.EpisodeURL AS episode_url,
+                            e.EpisodeArtwork AS episode_artwork,
+                            e.EpisodePubDate AS episode_pub_date,
+                            e.EpisodeGUID AS episode_guid,
+                            e.IsVideo AS is_video,
+                            p.PodcastID AS podcast_id, p.Author AS podcast_author,
+                            p.ArtworkURL AS podcast_artwork, p.FeedURL AS podcast_feed_url,
+                            p.WebsiteURL AS podcast_website_url,
+                            p.Categories AS podcast_categories, p.Explicit AS podcast_explicit
                      FROM Episodes e
                      JOIN Podcasts p ON e.PodcastID = p.PodcastID
                      WHERE e.EpisodeID = ?"
@@ -18463,6 +18564,29 @@ impl DatabasePool {
                     title: row.try_get::<String, _>("title").unwrap_or_default(),
                     show_name: row.try_get::<String, _>("show_name").unwrap_or_default(),
                     duration: row.try_get::<i32, _>("duration").unwrap_or(0),
+                    episode_id: row.try_get::<i32, _>("episode_id").unwrap_or(0),
+                    episode_description: row.try_get("episode_description").ok().flatten(),
+                    episode_url: row.try_get("episode_url").ok().flatten(),
+                    episode_artwork: row.try_get("episode_artwork").ok().flatten(),
+                    episode_pub_date: row
+                        .try_get::<Option<chrono::NaiveDateTime>, _>("episode_pub_date")
+                        .ok()
+                        .flatten()
+                        .map(|d| d.format("%Y-%m-%dT%H:%M:%S").to_string()),
+                    episode_guid: row.try_get("episode_guid").ok().flatten(),
+                    is_video: if is_youtube {
+                        true
+                    } else {
+                        row.try_get::<bool, _>("is_video").unwrap_or(false)
+                    },
+                    is_youtube,
+                    podcast_id: row.try_get::<i32, _>("podcast_id").unwrap_or(0),
+                    podcast_author: row.try_get("podcast_author").ok().flatten(),
+                    podcast_artwork: row.try_get("podcast_artwork").ok().flatten(),
+                    podcast_feed_url: row.try_get("podcast_feed_url").ok().flatten(),
+                    podcast_website_url: row.try_get("podcast_website_url").ok().flatten(),
+                    podcast_categories: row.try_get("podcast_categories").ok().flatten(),
+                    podcast_explicit: row.try_get("podcast_explicit").ok().flatten(),
                 }))
             }
         }
